@@ -8,6 +8,25 @@
 <meta name="theme-color" content="#16303a">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
+
+<!-- ============ FIREBASE (cloud login + data sync) ============ -->
+<!-- Fill in FIREBASE_CONFIG below with your own project's values from the Firebase Console -->
+<!-- (Project Settings → General → Your apps → SDK setup and configuration → Config) -->
+<!-- If left as-is (apiKey: "PASTE_YOUR_KEY_HERE"), the app runs in local-only mode, exactly as before. -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script>
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyCmTFQ5FsIV1cOMMcyju-KpJ98-MwAbh3s",
+    authDomain: "indusschool-32300.firebaseapp.com",
+    projectId: "indusschool-32300",
+    storageBucket: "indusschool-32300.firebasestorage.app",
+    messagingSenderId: "1014979812164",
+    appId: "1:1014979812164:web:061cbcb57ec588a069d511"
+  };
+</script>
+
 <script>
 /** @license
  *
@@ -534,9 +553,22 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   .divider{height:1px;background:var(--line);margin:18px 0;}
   ::-webkit-scrollbar{width:9px;height:9px;}
   ::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;}
+  .auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,var(--navy) 0%,var(--navy-2) 100%);padding:20px;}
+  .auth-card{background:var(--white);border-radius:16px;padding:36px 32px;max-width:380px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+  .auth-card .seal{width:56px;height:56px;border-radius:50%;border:2px solid var(--gold);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-family:'Lora',serif;font-weight:700;color:var(--gold);font-size:20px;}
+  .auth-card h2{text-align:center;font-size:19px;color:var(--navy);margin-bottom:4px;}
+  .auth-card .sub{text-align:center;font-size:12px;color:var(--muted);margin-bottom:24px;}
+  .auth-card label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:5px;font-weight:600;margin-top:14px;}
+  .auth-card input{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:8px;font-size:13.5px;}
+  .auth-card .btn{width:100%;justify-content:center;margin-top:22px;padding:11px;}
+  .auth-error{background:#f6e5df;color:var(--red);padding:10px 12px;border-radius:8px;font-size:12px;margin-top:14px;display:none;}
+  .auth-toggle{text-align:center;font-size:12px;color:var(--muted);margin-top:16px;}
+  .auth-toggle a{color:var(--gold);cursor:pointer;font-weight:600;text-decoration:none;}
+  .role-badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;background:rgba(214,163,92,.18);color:var(--gold-2);margin-left:6px;}
 </style>
 </head>
 <body>
+<div id="authRoot"></div>
 <div id="root"></div>
 <div class="toast" id="toast"></div>
 <script id="students-data" type="application/json">
@@ -612,16 +644,34 @@ async function idbSet(key, value){
   });
 }
 const HAS_CLAUDE_STORAGE = (typeof window.storage !== 'undefined' && typeof window.storage.get === 'function');
+const FIREBASE_ENABLED = FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.apiKey !== 'PASTE_YOUR_KEY_HERE';
+let fbApp=null, fbAuth=null, fbDb=null, currentUser=null, currentUserRole='teacher';
+
 const appStorage = {
   async get(key){
+    if(FIREBASE_ENABLED && fbDb && currentUser){
+      try{
+        const doc = await fbDb.collection('schoolData').doc(key).get();
+        return doc.exists ? {key, value: doc.data().value} : null;
+      }catch(e){ /* fall through to local */ }
+    }
     if(HAS_CLAUDE_STORAGE){ try{ return await window.storage.get(key); }catch(e){ /* fall through */ } }
     return idbGet(key);
   },
   async set(key, value){
+    if(FIREBASE_ENABLED && fbDb && currentUser){
+      try{
+        await fbDb.collection('schoolData').doc(key).set({ value, updatedAt: Date.now(), updatedBy: currentUser.email });
+        idbSet(key, value); // keep an offline copy too
+        return {key, value};
+      }catch(e){ /* fall through to local */ }
+    }
     if(HAS_CLAUDE_STORAGE){ try{ return await window.storage.set(key, value); }catch(e){ /* fall through */ } }
     return idbSet(key, value);
   }
 };
+
+function isAdmin(){ return currentUserRole === 'admin'; }
 
 async function loadStorage(){
   try{
@@ -766,6 +816,13 @@ function sidebarHTML(){
         </div>`).join('')}
     </nav>
     <div class="sidebar-foot">${activeStudents().length} active students<br>${STUDENTS.length} total records</div>
+    ${FIREBASE_ENABLED && currentUser ? `
+      <div style="border-top:1px solid rgba(255,255,255,.12);margin-top:12px;padding-top:12px;">
+        <div style="font-size:11px;color:#cfe0e1;word-break:break-all;">${currentUser.email}<span class="role-badge">${currentUserRole}</span></div>
+        ${isAdmin()?`<div class="nav-item" id="addUserNavBtn" style="margin-top:8px;">${navIcon('students')}<span>Add User</span></div>`:''}
+        <div class="nav-item" id="logoutNavBtn" style="margin-top:2px;">${navIcon('reportcards')}<span>Sign Out</span></div>
+      </div>
+    ` : ''}
   </div>`;
 }
 
@@ -781,6 +838,10 @@ function attachGlobalHandlers(){
   document.querySelectorAll('[data-nav]').forEach(el=>{
     el.addEventListener('click', ()=>{ view = el.dataset.nav; selected.clear(); render(); });
   });
+  const addUserBtn = document.getElementById('addUserNavBtn');
+  if(addUserBtn) addUserBtn.addEventListener('click', openAddUserModal);
+  const logoutBtn = document.getElementById('logoutNavBtn');
+  if(logoutBtn) logoutBtn.addEventListener('click', handleLogout);
 }
 
 /* ============ DASHBOARD ============ */
@@ -993,7 +1054,7 @@ function studentsHTML(){
       <input type="file" id="bulkPhotoInput" accept="image/*" multiple style="display:none;">
       <button class="btn outline" id="exportCsvBtn">Export CSV</button>
       <button class="btn outline" id="bulkPhotoBtn">Bulk Upload Photos</button>
-      <button class="btn gold" id="addStudentBtn">+ Add Student</button>
+      ${(!FIREBASE_ENABLED || isAdmin()) ? `<button class="btn gold" id="addStudentBtn">+ Add Student</button>` : ''}
     </div>
   </div>
 
@@ -1055,7 +1116,8 @@ function attachStudentsHandlers(){
   document.getElementById('bulkPhotoBtn').addEventListener('click', ()=> document.getElementById('bulkPhotoInput').click());
   document.getElementById('bulkPhotoInput').addEventListener('change', handleBulkPhotos);
   document.getElementById('exportCsvBtn').addEventListener('click', exportStudentsCSV);
-  document.getElementById('addStudentBtn').addEventListener('click', ()=> openStudentFormModal(null));
+  const addStudentBtn = document.getElementById('addStudentBtn');
+  if(addStudentBtn) addStudentBtn.addEventListener('click', ()=> openStudentFormModal(null));
 }
 
 function normName(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]/g,''); }
@@ -1235,7 +1297,7 @@ function renderProfileModal(el, s, confirmingDelete){
         <button class="btn gold sm" id="goReportCard">Generate Report Card</button>
         <button class="btn outline sm" id="goCertificate">Generate Certificate</button>
         <button class="btn outline sm" id="editStudentBtn">Edit Details</button>
-        <button class="btn sm" style="background:var(--red);border-color:var(--red);" id="deleteStudentBtn">Delete Student</button>
+        ${(!FIREBASE_ENABLED || isAdmin()) ? `<button class="btn sm" style="background:var(--red);border-color:var(--red);" id="deleteStudentBtn">Delete Student</button>` : ''}
       </div>
       `}
     </div>
@@ -1267,7 +1329,8 @@ function renderProfileModal(el, s, confirmingDelete){
     document.getElementById('goReportCard').addEventListener('click', ()=>{ view='reportcards'; selected=new Set([grNo]); render(); });
     document.getElementById('goCertificate').addEventListener('click', ()=>{ view='certificates'; selected=new Set([grNo]); render(); });
     document.getElementById('editStudentBtn').addEventListener('click', ()=>{ el.innerHTML=''; openStudentFormModal(grNo); });
-    document.getElementById('deleteStudentBtn').addEventListener('click', ()=> renderProfileModal(el, s, true));
+    const deleteBtn = document.getElementById('deleteStudentBtn');
+    if(deleteBtn) deleteBtn.addEventListener('click', ()=> renderProfileModal(el, s, true));
   }
 }
 
@@ -2184,8 +2247,178 @@ function imgFormat(dataUrl){
   return 'JPEG';
 }
 
+/* ============ AUTHENTICATION ============ */
+function renderLoginScreen(mode, errorMsg){
+  mode = mode || 'login';
+  const el = document.getElementById('authRoot');
+  el.innerHTML = `
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="seal">ISS</div>
+      <h2>${SCHOOL_NAME}</h2>
+      <div class="sub">${mode==='login' ? 'Sign in to Student Records System' : 'Set a new password to continue'}</div>
+      <div>
+        <label>Email</label>
+        <input type="email" id="authEmail" autocomplete="username" placeholder="you@school.com">
+        <label>Password</label>
+        <input type="password" id="authPassword" autocomplete="current-password" placeholder="••••••••">
+      </div>
+      <button class="btn gold" id="authSubmitBtn">Sign In</button>
+      <div class="auth-error" id="authError">${errorMsg||''}</div>
+      <div class="auth-toggle">Forgot your password? <a id="authResetLink">Reset it</a></div>
+    </div>
+  </div>`;
+  if(errorMsg) document.getElementById('authError').style.display='block';
+  document.getElementById('authSubmitBtn').addEventListener('click', doLogin);
+  document.getElementById('authPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+  document.getElementById('authResetLink').addEventListener('click', doPasswordReset);
+}
+
+async function doLogin(){
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const errEl = document.getElementById('authError');
+  if(!email || !password){ errEl.textContent='Please enter both email and password.'; errEl.style.display='block'; return; }
+  try{
+    await fbAuth.signInWithEmailAndPassword(email, password);
+    // onAuthStateChanged handles the rest
+  }catch(e){
+    errEl.textContent = friendlyAuthError(e);
+    errEl.style.display='block';
+  }
+}
+
+async function doPasswordReset(){
+  const email = document.getElementById('authEmail').value.trim();
+  const errEl = document.getElementById('authError');
+  if(!email){ errEl.textContent='Enter your email above first, then tap Reset.'; errEl.style.display='block'; return; }
+  try{
+    await fbAuth.sendPasswordResetEmail(email);
+    errEl.style.color = 'var(--green)';
+    errEl.textContent='Password reset email sent — check your inbox.';
+    errEl.style.display='block';
+  }catch(e){
+    errEl.style.color = 'var(--red)';
+    errEl.textContent = friendlyAuthError(e);
+    errEl.style.display='block';
+  }
+}
+
+function friendlyAuthError(e){
+  const code = e.code||'';
+  if(code.includes('user-not-found') || code.includes('wrong-password') || code.includes('invalid-credential')) return 'Incorrect email or password.';
+  if(code.includes('too-many-requests')) return 'Too many attempts — please wait a moment and try again.';
+  if(code.includes('invalid-email')) return 'That email address looks invalid.';
+  return 'Something went wrong. Please try again.';
+}
+
+async function ensureUserRole(user){
+  const ref = fbDb.collection('users').doc(user.uid);
+  const doc = await ref.get();
+  if(doc.exists){
+    currentUserRole = doc.data().role || 'teacher';
+  } else {
+    // First-ever user in the system becomes admin automatically; everyone after is a teacher by default
+    const allUsers = await fbDb.collection('users').limit(1).get();
+    const role = allUsers.empty ? 'admin' : 'teacher';
+    await ref.set({ email: user.email, role, createdAt: Date.now() });
+    currentUserRole = role;
+  }
+}
+
+async function handleLogout(){
+  try{ await fbAuth.signOut(); }catch(e){}
+}
+
+/* Admin: add a new teacher/admin account without logging yourself out (secondary Firebase app instance) */
+async function adminCreateUser(email, password, role){
+  const secondaryName = 'secondary-'+Date.now();
+  const secondary = firebase.initializeApp(FIREBASE_CONFIG, secondaryName);
+  try{
+    const cred = await secondary.auth().createUserWithEmailAndPassword(email, password);
+    await fbDb.collection('users').doc(cred.user.uid).set({ email, role, createdAt: Date.now() });
+    await secondary.auth().signOut();
+  } finally {
+    await secondary.delete();
+  }
+}
+
+function openAddUserModal(){
+  const el = document.getElementById('addStudentModalRoot') || document.getElementById('authRoot');
+  const modalEl = document.createElement('div');
+  modalEl.id = 'addUserModalRoot';
+  document.body.appendChild(modalEl);
+  modalEl.innerHTML = `
+  <div class="modal-backdrop" id="auBackdrop">
+    <div class="modal">
+      <div class="modal-head">
+        <div><div class="eyebrow">User Accounts</div><h3>Add Teacher / Admin Account</h3></div>
+        <button class="modal-close" id="auClose">&times;</button>
+      </div>
+      <div class="field-grid" style="grid-template-columns:1fr;">
+        <div class="field"><label>Email</label><input type="email" id="auEmail"></div>
+        <div class="field"><label>Temporary Password (min 6 characters)</label><input type="text" id="auPassword"></div>
+        <div class="field"><label>Role</label>
+          <select id="auRole"><option value="teacher">Teacher</option><option value="admin">Admin</option></select>
+        </div>
+      </div>
+      <div class="helper">Share the email and temporary password with them — they can change it later using "Reset it" on the login screen.</div>
+      <div class="divider"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn outline" id="auCancel">Cancel</button>
+        <button class="btn gold" id="auSave">Create Account</button>
+      </div>
+    </div>
+  </div>`;
+  const close = ()=> modalEl.remove();
+  document.getElementById('auClose').addEventListener('click', close);
+  document.getElementById('auCancel').addEventListener('click', close);
+  document.getElementById('auBackdrop').addEventListener('click', e=>{ if(e.target.id==='auBackdrop') close(); });
+  document.getElementById('auSave').addEventListener('click', async ()=>{
+    const email = document.getElementById('auEmail').value.trim();
+    const password = document.getElementById('auPassword').value;
+    const role = document.getElementById('auRole').value;
+    if(!email || password.length<6){ showToast('Enter a valid email and a password of at least 6 characters'); return; }
+    try{
+      await adminCreateUser(email, password, role);
+      showToast('Account created for ' + email);
+      close();
+    }catch(e){
+      showToast(friendlyAuthError(e));
+    }
+  });
+}
+
 /* ============ INIT ============ */
-loadStorage();
+function bootApp(){
+  document.getElementById('authRoot').innerHTML = '';
+  loadStorage();
+}
+
+if(FIREBASE_ENABLED){
+  fbApp = firebase.initializeApp(FIREBASE_CONFIG);
+  fbAuth = firebase.auth();
+  fbDb = firebase.firestore();
+  renderLoginScreen();
+  fbAuth.onAuthStateChanged(async (user)=>{
+    if(user){
+      currentUser = user;
+      try{
+        await ensureUserRole(user);
+        bootApp();
+      }catch(e){
+        renderLoginScreen('login', 'Signed in, but could not load your account role. Please refresh and try again.');
+      }
+    } else {
+      currentUser = null;
+      document.getElementById('root').innerHTML = '';
+      renderLoginScreen();
+    }
+  });
+} else {
+  // Local-only mode — no Firebase configured, behaves exactly as before
+  loadStorage();
+}
 
 /* Register service worker for offline support — only works when hosted (http/https), not from a local file:// path */
 if('serviceWorker' in navigator && (location.protocol==='https:' || location.protocol==='http:')){
