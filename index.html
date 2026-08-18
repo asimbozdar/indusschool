@@ -675,30 +675,68 @@ async function idbSet(key, value){
 const HAS_CLAUDE_STORAGE = (typeof window.storage !== 'undefined' && typeof window.storage.get === 'function');
 const FIREBASE_ENABLED = FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.apiKey !== 'PASTE_YOUR_KEY_HERE';
 let fbApp=null, fbAuth=null, fbDb=null, currentUser=null, currentUserRole='teacher';
+let pendingSyncKeys = new Set(); // keys saved locally while offline/cloud-unreachable, waiting to sync
 
 const appStorage = {
   async get(key){
-    if(FIREBASE_ENABLED && fbDb && currentUser && currentSchoolId){
+    // Local copy first — instant, works offline. If we're online and Firebase is set up,
+    // refresh from the cloud in the background-ish (still awaited, but local already has a value
+    // ready if this fails/times out) so the app never blocks waiting on a flaky connection.
+    let local = null;
+    try{ local = await idbGet(key); }catch(e){ /* no local copy yet */ }
+    if(FIREBASE_ENABLED && fbDb && currentUser && currentSchoolId && navigator.onLine){
       try{
         const doc = await schoolCol('data').doc(key).get();
-        return doc.exists ? {key, value: doc.data().value} : null;
+        if(doc.exists){ idbSet(key, doc.data().value); return {key, value: doc.data().value}; }
       }catch(e){ /* fall through to local */ }
     }
+    if(local) return local;
     if(HAS_CLAUDE_STORAGE){ try{ return await window.storage.get(key); }catch(e){ /* fall through */ } }
-    return idbGet(key);
+    return null;
   },
   async set(key, value){
+    // Always save locally FIRST — this must never fail to be reliable offline (e.g. QR attendance scans).
+    try{ await idbSet(key, value); }catch(e){}
+    if(HAS_CLAUDE_STORAGE){ try{ await window.storage.set(key, value); }catch(e){} }
     if(FIREBASE_ENABLED && fbDb && currentUser && currentSchoolId){
+      if(!navigator.onLine){ pendingSyncKeys.add(key); return {key, value}; }
       try{
         await schoolCol('data').doc(key).set({ value, updatedAt: Date.now(), updatedBy: currentUser.email });
-        idbSet(key, value); // keep an offline copy too
-        return {key, value};
-      }catch(e){ /* fall through to local */ }
+        pendingSyncKeys.delete(key);
+      }catch(e){ pendingSyncKeys.add(key); }
     }
-    if(HAS_CLAUDE_STORAGE){ try{ return await window.storage.set(key, value); }catch(e){ /* fall through */ } }
-    return idbSet(key, value);
+    return {key, value};
   }
 };
+
+async function flushPendingSync(){
+  if(!FIREBASE_ENABLED || !fbDb || !currentUser || !currentSchoolId) return;
+  const keys = [...pendingSyncKeys];
+  if(!keys.length) return;
+  for(const key of keys){
+    try{
+      if(key.startsWith('photodelete:')){
+        const grNo = key.slice('photodelete:'.length);
+        await schoolCol('photos').doc(grNo).delete();
+      } else if(key.startsWith('photo:')){
+        const grNo = key.slice('photo:'.length);
+        const local = await idbGet(key);
+        if(local && local.value){
+          await schoolCol('photos').doc(grNo).set({ value: local.value, updatedAt: Date.now(), updatedBy: currentUser.email });
+        }
+      } else {
+        const local = await idbGet(key);
+        if(local){
+          await schoolCol('data').doc(key).set({ value: local.value, updatedAt: Date.now(), updatedBy: currentUser.email });
+        }
+      }
+      pendingSyncKeys.delete(key);
+    }catch(e){ /* still offline or failed — try again next time */ }
+  }
+  if(!pendingSyncKeys.size) showToast('Back online — all changes synced');
+  if(document.getElementById('root')) render();
+}
+window.addEventListener('online', flushPendingSync);
 
 function isAdmin(){ return currentUserRole === 'admin' || currentUserRole === 'superadmin'; }
 function isSuperAdmin(){ return currentUserRole === 'superadmin'; }
@@ -758,16 +796,22 @@ async function savePhotos(){
   try{ await appStorage.set('photos', JSON.stringify(photos)); }catch(e){ showToast('Photo save failed'); }
 }
 async function savePhotoOne(grNo, dataUrl){
+  try{ await idbSet('photo:'+grNo, dataUrl); }catch(e){}
   if(FIREBASE_ENABLED && fbDb && currentUser && currentSchoolId){
+    if(!navigator.onLine){ pendingSyncKeys.add('photo:'+grNo); return; }
     try{
       await schoolCol('photos').doc(grNo).set({ value: dataUrl, updatedAt: Date.now(), updatedBy: currentUser.email });
+      pendingSyncKeys.delete('photo:'+grNo);
       return;
-    }catch(e){ showToast('Photo save failed — it may still be too large. Try a smaller image.'); return; }
+    }catch(e){ pendingSyncKeys.add('photo:'+grNo); return; }
   }
   await savePhotos();
 }
 async function deletePhotoOne(grNo){
+  try{ await idbSet('photo:'+grNo, null); }catch(e){}
+  pendingSyncKeys.delete('photo:'+grNo);
   if(FIREBASE_ENABLED && fbDb && currentUser && currentSchoolId){
+    if(!navigator.onLine){ pendingSyncKeys.add('photodelete:'+grNo); return; }
     try{ await schoolCol('photos').doc(grNo).delete(); return; }catch(e){ showToast('Photo remove failed'); return; }
   }
   await savePhotos();
@@ -922,7 +966,7 @@ function sidebarHTML(){
     ${FIREBASE_ENABLED ? `
       <div style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:${navigator.onLine?'#8fd4a8':'#e0a97a'};">
         <span style="width:7px;height:7px;border-radius:50%;background:${navigator.onLine?'#4caf72':'#e0a97a'};display:inline-block;"></span>
-        ${navigator.onLine ? 'Online — synced automatically' : 'Offline — changes saved, will sync when online'}
+        ${navigator.onLine ? (pendingSyncKeys.size ? `Online — syncing ${pendingSyncKeys.size} change(s)…` : 'Online — all changes synced') : `Offline — ${pendingSyncKeys.size} change(s) saved, will sync when online`}
         <span id="syncNowBtn" style="margin-left:auto;cursor:pointer;text-decoration:underline;color:#cfe0e1;">Sync now</span>
       </div>
     ` : ''}
@@ -967,7 +1011,7 @@ function attachGlobalHandlers(){
   const logoutBtn = document.getElementById('logoutNavBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', handleLogout);
   const syncBtn = document.getElementById('syncNowBtn');
-  if(syncBtn) syncBtn.addEventListener('click', async ()=>{ showToast('Syncing…'); await loadStorage(); showToast('Sync complete'); });
+  if(syncBtn) syncBtn.addEventListener('click', async ()=>{ showToast('Syncing…'); await flushPendingSync(); await loadStorage(); showToast('Sync complete'); });
 }
 
 window.addEventListener('online', ()=>{ if(document.getElementById('root')) render(); });
