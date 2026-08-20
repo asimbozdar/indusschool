@@ -1225,11 +1225,20 @@ function studentsHTML(){
       <div class="sub">${list.length} of ${STUDENTS.length} records shown</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       <input type="file" id="bulkPhotoInput" accept="image/*" multiple style="display:none;">
+      <input type="file" id="excelImportInput" accept=".xlsx,.xls" style="display:none;">
       <button class="btn outline" id="exportCsvBtn">Export CSV</button>
       <button class="btn outline" id="bulkPhotoBtn">Bulk Upload Photos</button>
-      ${(!FIREBASE_ENABLED || isAdmin()) ? `<button class="btn gold" id="addStudentBtn">+ Add Student</button>` : ''}
+      ${(!FIREBASE_ENABLED || isAdmin()) ? `
+        <button class="btn outline" id="downloadTemplateBtn">Download Excel Template</button>
+        <button class="btn outline" id="importExcelBtn">Import from Excel</button>
+        <button class="btn gold" id="addStudentBtn">+ Add Student</button>
+      ` : ''}
+      ${(!FIREBASE_ENABLED || isAdmin()) && STUDENTS.some(s=>s.status==='Pasout') ? `
+        <button class="btn outline" id="fixPasoutBtn" style="border-color:var(--gold);color:var(--gold);">Fix "Pasout" → "Passout" (${STUDENTS.filter(s=>s.status==='Pasout').length})</button>
+      ` : ''}
     </div>
   </div>
+  <div id="excelImportModalRoot"></div>
 
   <div class="filters">
     <select id="fCls">
@@ -1291,6 +1300,39 @@ function attachStudentsHandlers(){
   document.getElementById('exportCsvBtn').addEventListener('click', exportStudentsCSV);
   const addStudentBtn = document.getElementById('addStudentBtn');
   if(addStudentBtn) addStudentBtn.addEventListener('click', ()=> openStudentFormModal(null));
+  const templateBtn = document.getElementById('downloadTemplateBtn');
+  if(templateBtn) templateBtn.addEventListener('click', downloadExcelTemplate);
+  const importBtn = document.getElementById('importExcelBtn');
+  if(importBtn) importBtn.addEventListener('click', ()=> document.getElementById('excelImportInput').click());
+  const importInput = document.getElementById('excelImportInput');
+  if(importInput) importInput.addEventListener('change', handleExcelImportFile);
+  const fixPasoutBtn = document.getElementById('fixPasoutBtn');
+  if(fixPasoutBtn) fixPasoutBtn.addEventListener('click', fixPasoutSpelling);
+}
+
+async function fixPasoutSpelling(){
+  const affected = STUDENTS.filter(s=>s.status==='Pasout');
+  if(!affected.length) return;
+  const btn = document.getElementById('fixPasoutBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Fixing…'; }
+  if(FIREBASE_ENABLED && currentSchoolId){
+    const CHUNK = 450;
+    for(let i=0; i<affected.length; i+=CHUNK){
+      const batch = fbDb.batch();
+      affected.slice(i, i+CHUNK).forEach(s=> batch.update(schoolCol('students').doc(s.grNo), {status:'Passout'}));
+      try{ await batch.commit(); }catch(e){ showToast('Some records failed to update — try again.'); }
+    }
+    await loadStudentsFromCloud();
+  } else {
+    affected.forEach(s=>{
+      if(isBaseStudent(s.grNo)) studentEdits[s.grNo] = { ...(studentEdits[s.grNo]||{}), status:'Passout' };
+      else { const idx = studentAdds.findIndex(x=>x.grNo===s.grNo); if(idx>=0) studentAdds[idx].status='Passout'; }
+    });
+    rebuildStudents();
+    await saveStudentData();
+  }
+  showToast(`Updated ${affected.length} student(s) to "Passout"`);
+  render();
 }
 
 function normName(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]/g,''); }
@@ -1396,6 +1438,184 @@ function suggestNextGrNo(){
   const nums = STUDENTS.map(s=>parseInt(s.grNo,10)).filter(n=>!isNaN(n));
   const max = nums.length ? Math.max(...nums) : 0;
   return String(max+1);
+}
+
+/* ============ EXCEL IMPORT / TEMPLATE ============ */
+const EXCEL_TEMPLATE_HEADERS = [
+  'Roll No','Student Name','Father Name','Gender','Date of Birth (DD-MM-YYYY)',
+  'Admit Class','Current Class','Section','Religion','Address','Contact',
+  'Emergency Contact','Admission Date (DD-MM-YYYY)','Shift','Medium','Status',
+  'District','Taluka','Village',
+];
+
+function downloadExcelTemplate(){
+  const wb = XLSX.utils.book_new();
+  const sampleRow = ['1','SAMPLE STUDENT','FATHER NAME','Male','01-04-2015',
+    CLASS_ORDER[0]||'I', CLASS_ORDER[0]||'I', 'A', 'Islam', 'Village / Address', '03001234567',
+    '03001234568', '01-04-2024', 'Morning', 'Urdu', 'NEW ENROLLMENT', SCHOOL_META.district||'', SCHOOL_META.taluka||'', SCHOOL_META.village||''];
+  const ws = XLSX.utils.aoa_to_sheet([EXCEL_TEMPLATE_HEADERS, sampleRow]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Students');
+  XLSX.writeFile(wb, `${SCHOOL_NAME.replace(/\s+/g,'_')}_Student_Template.xlsx`);
+  showToast('Template downloaded — fill it in and use "Import from Excel"');
+}
+
+function excelSerialToDMY(val){
+  if(val instanceof Date){
+    return `${String(val.getDate()).padStart(2,'0')}-${String(val.getMonth()+1).padStart(2,'0')}-${val.getFullYear()}`;
+  }
+  if(typeof val === 'number'){
+    try{
+      const d = XLSX.SSF.parse_date_code(val);
+      if(d) return `${String(d.d).padStart(2,'0')}-${String(d.m).padStart(2,'0')}-${d.y}`;
+    }catch(e){}
+  }
+  return String(val==null?'':val).trim();
+}
+
+function titleCase(s){
+  return String(s||'').trim().split(/\s+/).map(w=> w? w[0].toUpperCase()+w.slice(1).toLowerCase() : w).join(' ');
+}
+
+let pendingImportRows = [];
+
+function handleExcelImportFile(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev)=>{
+    try{
+      const data = new Uint8Array(ev.target.result);
+      const wb = XLSX.read(data, {type:'array', cellDates:true});
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
+      processImportRows(rows);
+    }catch(err){
+      showToast('Could not read that file — make sure it is a valid .xlsx file');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+  e.target.value = '';
+}
+
+function processImportRows(rows){
+  const existingGrNos = new Set(STUDENTS.map(s=>s.grNo));
+  const seenInFile = new Set();
+  const valid = [];
+  const problems = [];
+
+  rows.forEach((row, idx)=>{
+    const get = (key)=>{
+      const found = Object.keys(row).find(k=> k.trim().toLowerCase().startsWith(key.toLowerCase()));
+      return found ? row[found] : '';
+    };
+    const grNo = String(get('Roll No')||'').trim();
+    const name = String(get('Student Name')||'').trim();
+    const rowNum = idx+2; // account for header row
+
+    if(!grNo && !name) return; // skip fully blank rows
+    if(!grNo){ problems.push(`Row ${rowNum}: missing Roll No`); return; }
+    if(!name){ problems.push(`Row ${rowNum} (Roll ${grNo}): missing Student Name`); return; }
+    if(existingGrNos.has(grNo)){ problems.push(`Row ${rowNum}: Roll No ${grNo} already exists in this school`); return; }
+    if(seenInFile.has(grNo)){ problems.push(`Row ${rowNum}: Roll No ${grNo} is duplicated within this file`); return; }
+    seenInFile.add(grNo);
+
+    valid.push({
+      grNo,
+      name: name.toUpperCase(),
+      fatherName: String(get('Father Name')||'').trim().toUpperCase(),
+      gender: /f/i.test(String(get('Gender')||'')) ? 'Female' : 'Male',
+      dob: excelSerialToDMY(get('Date of Birth')),
+      admitClass: String(get('Admit Class')||CLASS_ORDER[0]||'').trim(),
+      currentClass: String(get('Current Class')||CLASS_ORDER[0]||'').trim(),
+      section: String(get('Section')||'A').trim().toUpperCase(),
+      religion: titleCase(get('Religion')||'Islam'),
+      address: String(get('Address')||'').trim().toUpperCase(),
+      contact: String(get('Contact')||'').trim(),
+      emergencyContact: String(get('Emergency Contact')||'').trim(),
+      admissionDate: excelSerialToDMY(get('Admission Date')),
+      shift: String(get('Shift')||'Morning').trim(),
+      medium: String(get('Medium')||'').trim(),
+      status: String(get('Status')||'NEW ENROLLMENT').trim(),
+      district: String(get('District')||SCHOOL_META.district||'').trim(),
+      taluka: String(get('Taluka')||SCHOOL_META.taluka||'').trim(),
+      village: String(get('Village')||SCHOOL_META.village||'').trim(),
+      schoolName: SCHOOL_NAME,
+    });
+  });
+
+  pendingImportRows = valid;
+  renderImportPreviewModal(valid, problems, rows.length);
+}
+
+function renderImportPreviewModal(valid, problems, totalRows){
+  const el = document.getElementById('excelImportModalRoot');
+  el.innerHTML = `
+  <div class="modal-backdrop" id="impBackdrop">
+    <div class="modal" style="max-width:720px;">
+      <div class="modal-head">
+        <div><div class="eyebrow">Import from Excel</div><h3>Review Before Importing</h3></div>
+        <button class="modal-close" id="impClose">&times;</button>
+      </div>
+      <div class="stat-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px;">
+        <div class="stat-card"><div class="num">${totalRows}</div><div class="lbl">Rows in File</div></div>
+        <div class="stat-card"><div class="num">${valid.length}</div><div class="lbl">Ready to Import</div></div>
+        <div class="stat-card"><div class="num">${problems.length}</div><div class="lbl">Skipped / Issues</div></div>
+      </div>
+      ${problems.length? `
+        <div class="panel" style="max-height:160px;overflow-y:auto;background:#f6e5df;border-color:#e0c3b8;">
+          <h3 style="color:var(--red);font-size:13px;">Rows that will be skipped</h3>
+          ${problems.map(p=>`<div style="font-size:12px;color:var(--red);padding:3px 0;">${p}</div>`).join('')}
+        </div>
+      ` : ''}
+      ${valid.length ? `
+        <div class="panel" style="max-height:220px;overflow-y:auto;padding:0;">
+          <table>
+            <thead><tr><th>Roll #</th><th>Name</th><th>Class</th><th>Section</th><th>Gender</th></tr></thead>
+            <tbody>
+              ${valid.slice(0,50).map(s=>`<tr><td>${s.grNo}</td><td>${s.name}</td><td>${s.currentClass}</td><td>${s.section}</td><td>${s.gender}</td></tr>`).join('')}
+            </tbody>
+          </table>
+          ${valid.length>50 ? `<div class="helper" style="padding:10px;">…and ${valid.length-50} more</div>` : ''}
+        </div>
+      ` : ''}
+      <div class="divider"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn outline" id="impCancel">Cancel</button>
+        <button class="btn gold" id="impConfirm" ${valid.length?'':'disabled'}>Import ${valid.length} Student${valid.length===1?'':'s'}</button>
+      </div>
+    </div>
+  </div>`;
+  const close = ()=>{ el.innerHTML=''; pendingImportRows=[]; };
+  document.getElementById('impClose').addEventListener('click', close);
+  document.getElementById('impCancel').addEventListener('click', close);
+  document.getElementById('impBackdrop').addEventListener('click', e=>{ if(e.target.id==='impBackdrop') close(); });
+  document.getElementById('impConfirm').addEventListener('click', async ()=>{
+    document.getElementById('impConfirm').disabled = true;
+    document.getElementById('impConfirm').textContent = 'Importing…';
+    await bulkAddStudents(pendingImportRows);
+    close();
+    render();
+    showToast(`Imported ${pendingImportRows.length} student(s)`);
+  });
+}
+
+async function bulkAddStudents(list){
+  if(!list.length) return;
+  if(FIREBASE_ENABLED && currentSchoolId){
+    const CHUNK = 450; // stay under Firestore's 500-write batch limit
+    for(let i=0; i<list.length; i+=CHUNK){
+      const batch = fbDb.batch();
+      list.slice(i, i+CHUNK).forEach(s=>{
+        batch.set(schoolCol('students').doc(s.grNo), s);
+      });
+      try{ await batch.commit(); }catch(e){ showToast('Some rows failed to import — check your connection and try again.'); }
+    }
+    await loadStudentsFromCloud();
+    return;
+  }
+  studentAdds.push(...list);
+  rebuildStudents();
+  await saveStudentData();
 }
 
 function showUndoToast(msg, onUndo){
