@@ -461,7 +461,14 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     padding:26px 18px;
     display:flex;flex-direction:column;
     position:sticky;top:0;height:100vh;
+    overflow-y:auto;
   }
+  .nav-section-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:#7d9698;margin:14px 0 4px 12px;}
+  .nav-item.compact{padding:8px 12px;font-size:12.5px;}
+  .settings-toggle{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 12px;border-radius:8px;font-size:11.5px;color:#a9bdbf;}
+  .settings-toggle:hover{background:rgba(255,255,255,.06);}
+  .settings-toggle .chev{transition:transform .15s;}
+  .settings-toggle.open .chev{transform:rotate(90deg);}
   .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
   .brand .seal{
     width:38px;height:38px;border-radius:50%;
@@ -641,6 +648,7 @@ let attendanceStore = {}; // monthKey (YYYY-MM) -> { "YYYY-MM-DD": { grNo: 'Pres
 let attendanceLoadedMonths = new Set();
 let selected = new Set();
 let view = 'dashboard';
+let sidebarSettingsOpen = false;
 let filters = { cls:'ALL', section:'ALL', status:'ALL', q:'' };
 
 /* ============ STORAGE ============ */
@@ -879,7 +887,7 @@ function showToast(msg){
 }
 
 /* ============ HELPERS ============ */
-function activeStudents(){ return STUDENTS.filter(s=>s.status!=='Dropout' && s.status!=='Pasout'); }
+function activeStudents(){ return STUDENTS.filter(s=>s.status!=='Dropout' && s.status!=='Passout'); }
 function initials(name){ return (name||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
 function U(v){ return (v==null?'':String(v)).toUpperCase(); }
 function normalizePhoneForWhatsApp(num){
@@ -892,7 +900,7 @@ function normalizePhoneForWhatsApp(num){
 function statusTagClass(s){
   if(s==='Promoted') return 'promoted';
   if(s==='Dropout') return 'dropout';
-  if(s==='Pasout') return 'pasout';
+  if(s==='Passout') return 'pasout';
   return 'new';
 }
 function filteredStudents(){
@@ -950,6 +958,7 @@ function sidebarHTML(){
     {k:'certificates', label:'Certificates'},
     {k:'letters', label:'Letters & Documents'},
   ];
+  const showSettings = FIREBASE_ENABLED && currentUser && isAdmin();
   return `
   <div class="sidebar">
     <div class="brand">
@@ -960,6 +969,7 @@ function sidebarHTML(){
       </div>
     </div>
     <div class="school-line">School Code: ${SCHOOL_META.code}<br>${SCHOOL_META.village}, ${SCHOOL_META.taluka}</div>
+
     <div class="nav-label">Menu</div>
     <nav>
       ${items.map(i=>`
@@ -967,22 +977,33 @@ function sidebarHTML(){
           ${navIcon(i.k)}<span>${i.label}</span>
         </div>`).join('')}
     </nav>
+
     <div class="sidebar-foot">${activeStudents().length} active students<br>${STUDENTS.length} total records</div>
+
+    ${showSettings ? `
+      <div class="nav-section-label">Admin</div>
+      <div class="settings-toggle ${sidebarSettingsOpen?'open':''}" id="settingsToggle">
+        <span>⚙ School Settings</span><span class="chev">›</span>
+      </div>
+      ${sidebarSettingsOpen ? `
+        <div class="nav-item compact" id="addUserNavBtn">${navIcon('students')}<span>Add User</span></div>
+        <div class="nav-item compact" id="schoolInfoBtn">${navIcon('dashboard')}<span>School Info & Logo</span></div>
+        <div class="nav-item compact" id="classSettingsBtn">${navIcon('reportcards')}<span>Class Settings</span></div>
+      ` : ''}
+    ` : ''}
+
     ${FIREBASE_ENABLED ? `
-      <div style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:${navigator.onLine?'#8fd4a8':'#e0a97a'};">
+      <div style="display:flex;align-items:center;gap:6px;margin-top:12px;font-size:11px;color:${navigator.onLine?'#8fd4a8':'#e0a97a'};">
         <span style="width:7px;height:7px;border-radius:50%;background:${navigator.onLine?'#4caf72':'#e0a97a'};display:inline-block;"></span>
-        ${navigator.onLine ? (pendingSyncKeys.size ? `Online — syncing ${pendingSyncKeys.size} change(s)…` : 'Online — all changes synced') : `Offline — ${pendingSyncKeys.size} change(s) saved, will sync when online`}
-        <span id="syncNowBtn" style="margin-left:auto;cursor:pointer;text-decoration:underline;color:#cfe0e1;">Sync now</span>
+        ${navigator.onLine ? (pendingSyncKeys.size ? `Syncing ${pendingSyncKeys.size}…` : 'All synced') : `Offline (${pendingSyncKeys.size} pending)`}
+        <span id="syncNowBtn" style="margin-left:auto;cursor:pointer;text-decoration:underline;color:#cfe0e1;">Sync</span>
       </div>
     ` : ''}
     ${FIREBASE_ENABLED && currentUser ? `
-      <div style="border-top:1px solid rgba(255,255,255,.12);margin-top:12px;padding-top:12px;">
+      <div style="border-top:1px solid rgba(255,255,255,.12);margin-top:10px;padding-top:10px;">
         <div style="font-size:11px;color:#cfe0e1;word-break:break-all;">${currentUser.email}<span class="role-badge">${currentUserRole}</span></div>
-        ${isAdmin()?`<div class="nav-item" id="addUserNavBtn" style="margin-top:8px;">${navIcon('students')}<span>Add User</span></div>`:''}
-        ${isAdmin()?`<div class="nav-item" id="schoolInfoBtn" style="margin-top:2px;">${navIcon('dashboard')}<span>School Info & Logo</span></div>`:''}
-        ${isAdmin()?`<div class="nav-item" id="classSettingsBtn" style="margin-top:2px;">${navIcon('reportcards')}<span>Class Settings</span></div>`:''}
-        ${currentUserRole==='superadmin'?`<div class="nav-item" id="switchSchoolBtn" style="margin-top:2px;">${navIcon('dashboard')}<span>Switch School</span></div>`:''}
-        <div class="nav-item" id="logoutNavBtn" style="margin-top:2px;">${navIcon('reportcards')}<span>Sign Out</span></div>
+        ${currentUserRole==='superadmin'?`<div class="nav-item compact" id="switchSchoolBtn" style="margin-top:6px;">${navIcon('dashboard')}<span>Switch School</span></div>`:''}
+        <div class="nav-item compact" id="logoutNavBtn" style="margin-top:2px;">${navIcon('reportcards')}<span>Sign Out</span></div>
       </div>
     ` : ''}
   </div>`;
@@ -1002,6 +1023,8 @@ function attachGlobalHandlers(){
   document.querySelectorAll('[data-nav]').forEach(el=>{
     el.addEventListener('click', ()=>{ view = el.dataset.nav; selected.clear(); render(); });
   });
+  const settingsToggle = document.getElementById('settingsToggle');
+  if(settingsToggle) settingsToggle.addEventListener('click', ()=>{ sidebarSettingsOpen = !sidebarSettingsOpen; render(); });
   const addUserBtn = document.getElementById('addUserNavBtn');
   if(addUserBtn) addUserBtn.addEventListener('click', openAddUserModal);
   const classSettingsBtn = document.getElementById('classSettingsBtn');
@@ -1029,7 +1052,7 @@ function computeSummary(){
   let gT={Male:0,Female:0}, rT={};
   let totalActive=0;
   CLASS_ORDER.forEach(cls=>{
-    const arr = STUDENTS.filter(s=>s.currentClass===cls && s.status!=='Dropout' && s.status!=='Pasout');
+    const arr = STUDENTS.filter(s=>s.currentClass===cls && s.status!=='Dropout' && s.status!=='Passout');
     if(!arr.length) return;
     const male = arr.filter(s=>s.gender==='Male').length;
     const female = arr.filter(s=>s.gender==='Female').length;
@@ -1044,7 +1067,7 @@ function computeSummary(){
 
 function dashboardHTML(){
   const {rows, gT, rT, totalActive} = computeSummary();
-  const pasouts = STUDENTS.filter(s=>s.status==='Pasout').length;
+  const pasouts = STUDENTS.filter(s=>s.status==='Passout').length;
   const dropouts = STUDENTS.filter(s=>s.status==='Dropout').length;
   const religionCols = Object.keys(rT);
   return `
@@ -1117,14 +1140,14 @@ function dashboardHTML(){
       <thead><tr><th>Class</th><th>Pasout</th><th>Dropout</th></tr></thead>
       <tbody>
         ${CLASS_ORDER.map(cls=>{
-          const p = STUDENTS.filter(s=>s.currentClass===cls && s.status==='Pasout').length;
+          const p = STUDENTS.filter(s=>s.currentClass===cls && s.status==='Passout').length;
           const d = STUDENTS.filter(s=>s.currentClass===cls && s.status==='Dropout').length;
           if(!p && !d) return '';
           return `<tr><td><b>${cls}</b></td><td>${p}</td><td>${d}</td></tr>`;
         }).join('')}
         <tr style="font-weight:700;background:var(--paper)">
           <td>Total</td>
-          <td>${STUDENTS.filter(s=>s.status==='Pasout').length}</td>
+          <td>${STUDENTS.filter(s=>s.status==='Passout').length}</td>
           <td>${STUDENTS.filter(s=>s.status==='Dropout').length}</td>
         </tr>
       </tbody>
@@ -1179,19 +1202,19 @@ function exportSummaryPDF(){
     religionCols.map(rc=>[rc, rT[rc], ((rT[rc]/totalActive)*100).toFixed(1)+'%']), pageW);
   y += 26;
 
-  const pasoutTotal = STUDENTS.filter(s=>s.status==='Pasout').length;
+  const pasoutTotal = STUDENTS.filter(s=>s.status==='Passout').length;
   const dropoutTotal = STUDENTS.filter(s=>s.status==='Dropout').length;
   if(pasoutTotal || dropoutTotal){
     if(y > 600){ doc.addPage(); y = 55; }
     doc.setFont('times','bold'); doc.setFontSize(12); doc.setTextColor(20);
     doc.text('Pasout & Dropout — Quantity (kept separate)', 50, y); y += 16;
     const psRows = CLASS_ORDER.map(cls=>{
-      const p = STUDENTS.filter(s=>s.currentClass===cls && s.status==='Pasout').length;
+      const p = STUDENTS.filter(s=>s.currentClass===cls && s.status==='Passout').length;
       const d = STUDENTS.filter(s=>s.currentClass===cls && s.status==='Dropout').length;
       return (p||d) ? [cls, p, d] : null;
     }).filter(Boolean);
     psRows.push(['Total', pasoutTotal, dropoutTotal]);
-    autoTableSimple(doc, y, [['Class','Pasout','Dropout']], psRows, pageW);
+    autoTableSimple(doc, y, [['Class','Passout','Dropout']], psRows, pageW);
   }
 
   doc.save(`Enrollment_Summary_${SCHOOL_META.code}.pdf`);
@@ -1257,7 +1280,7 @@ function studentsHTML(){
     </select>
     <select id="fStatus">
       <option value="ALL">All Status</option>
-      ${['Promoted','NEW ENROLLMENT','Pasout','Dropout'].map(s=>`<option value="${s}" ${filters.status===s?'selected':''}>${s}</option>`).join('')}
+      ${['Promoted','NEW ENROLLMENT','Passout','Dropout'].map(s=>`<option value="${s}" ${filters.status===s?'selected':''}>${s}</option>`).join('')}
     </select>
     <input type="search" id="fSearch" placeholder="Search name, father, roll no..." value="${filters.q}" style="min-width:220px;">
   </div>
@@ -1793,7 +1816,7 @@ function openStudentFormModal(grNoOrNull){
     currentClass: CLASS_ORDER,
     section: ['A','B','C'],
     religion: ['Islam','Hindu','Christian','Other'],
-    status: ['NEW ENROLLMENT','Promoted','Pasout','Dropout'],
+    status: ['NEW ENROLLMENT','Promoted','Passout','Dropout'],
     shift: ['Morning','Evening'],
   };
   el.innerHTML = `
@@ -1842,7 +1865,12 @@ function openStudentFormModal(grNoOrNull){
 }
 
 /* ============ REPORT CARDS VIEW ============ */
-const DEFAULT_SUBJECTS = ['English','Urdu/Sindhi','Mathematics','Science','Social Studies','Islamiyat'];
+const DEFAULT_SUBJECTS = ['English','Urdu','Sindhi','Mathematics','Science','Social Studies','Islamiyat'];
+const SENIOR_SUBJECTS = ['English','Urdu','Sindhi','Mathematics','Physics','Chemistry','Biology','Pak Study','Islamiyat'];
+function defaultSubjectsForClass(cls){
+  const senior = ['IX','X','9','10'].includes(String(cls||'').trim());
+  return (senior ? SENIOR_SUBJECTS : DEFAULT_SUBJECTS).map(n=>({name:n, total:100, obtained:''}));
+}
 let rcExamName = 'Annual Examination 2026';
 let rcFilters = { cls:'VI', section:'ALL' };
 
@@ -1898,7 +1926,7 @@ function manualAttendanceHTML(){
   const monthKey = attFilters.date.slice(0,7);
   ensureAttendanceMonthLoaded(monthKey);
   const dayData = (attendanceStore[monthKey]||{})[attFilters.date] || {};
-  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Pasout' && (attFilters.cls==='ALL'||s.currentClass===attFilters.cls) && (attFilters.section==='ALL'||s.section===attFilters.section));
+  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Passout' && (attFilters.cls==='ALL'||s.currentClass===attFilters.cls) && (attFilters.section==='ALL'||s.section===attFilters.section));
   const sections = classSections(attFilters.cls);
   let p=0,a=0,l=0,u=0;
   list.forEach(s=>{ const st = dayData[s.grNo]; if(st==='Present') p++; else if(st==='Absent') a++; else if(st==='Leave') l++; else u++; });
@@ -1965,7 +1993,7 @@ function attachManualAttendanceHandlers(){
   document.getElementById('dailyReportBtn').addEventListener('click', generateDailyAttendanceReportPDF);
   document.querySelectorAll('[data-mark]').forEach(b=> b.addEventListener('click', ()=> setAttendanceStatus(b.dataset.mark, b.dataset.status)));
   document.getElementById('markAllPresent').addEventListener('click', ()=>{
-    const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Pasout' && (attFilters.cls==='ALL'||s.currentClass===attFilters.cls) && (attFilters.section==='ALL'||s.section===attFilters.section));
+    const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Passout' && (attFilters.cls==='ALL'||s.currentClass===attFilters.cls) && (attFilters.section==='ALL'||s.section===attFilters.section));
     const monthKey = attFilters.date.slice(0,7);
     attendanceStore[monthKey] = attendanceStore[monthKey]||{};
     attendanceStore[monthKey][attFilters.date] = attendanceStore[monthKey][attFilters.date]||{};
@@ -1984,7 +2012,7 @@ async function generateDailyAttendanceReportPDF(){
   const monthKey = date.slice(0,7);
   await loadAttendanceMonth(monthKey);
   const dayData = (attendanceStore[monthKey]||{})[date] || {};
-  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Pasout');
+  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Passout');
 
   let totals = {Present:0, Absent:0, Leave:0, NotMarked:0};
   let genderTotals = { Male:{Present:0,Absent:0,Leave:0,NotMarked:0}, Female:{Present:0,Absent:0,Leave:0,NotMarked:0} };
@@ -2168,7 +2196,7 @@ function summaryAttendanceHTML(){
   ensureAttendanceMonthLoaded(monthKey);
   const monthData = attendanceStore[monthKey] || {};
   const dayKeys = Object.keys(monthData).sort();
-  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Pasout' && (attSummary.cls==='ALL'||s.currentClass===attSummary.cls));
+  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Passout' && (attSummary.cls==='ALL'||s.currentClass===attSummary.cls));
   const rows = list.map(s=>{
     let p=0,a=0,l=0;
     dayKeys.forEach(d=>{ const st = monthData[d][s.grNo]; if(st==='Present') p++; else if(st==='Absent') a++; else if(st==='Leave') l++; });
@@ -2222,7 +2250,7 @@ function exportAttendanceSummaryCSV(){
   const monthKey = attSummary.month;
   const monthData = attendanceStore[monthKey] || {};
   const dayKeys = Object.keys(monthData).sort();
-  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Pasout' && (attSummary.cls==='ALL'||s.currentClass===attSummary.cls));
+  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Passout' && (attSummary.cls==='ALL'||s.currentClass===attSummary.cls));
   const rows = [['Roll #','Name','Class','Section','Present','Absent','Leave','Attendance %']];
   list.forEach(s=>{
     let p=0,a=0,l=0;
@@ -2567,7 +2595,7 @@ function attachReportCardHandlers(){
 function openMarksModal(grNo){
   const s = STUDENTS.find(x=>x.grNo===grNo);
   const key = `${grNo}__${rcExamName}`;
-  const existing = marksStore[key] || { subjects: DEFAULT_SUBJECTS.map(n=>({name:n, total:100, obtained:''})) };
+  const existing = marksStore[key] || { subjects: defaultSubjectsForClass(s.currentClass) };
   const el = document.getElementById('marksModalRoot');
   el.innerHTML = `
   <div class="modal-backdrop" id="mBackdrop">
@@ -2648,7 +2676,7 @@ function generateReportCardsPDF(){
 function drawReportCardPage(doc, grNo){
   const s = STUDENTS.find(x=>x.grNo===grNo);
   const key = `${grNo}__${rcExamName}`;
-  const data = marksStore[key] || { subjects: DEFAULT_SUBJECTS.map(n=>({name:n, total:100, obtained:''})) };
+  const data = marksStore[key] || { subjects: defaultSubjectsForClass(s.currentClass) };
   const pageW = doc.internal.pageSize.getWidth();
   const marginX = 55;
   let y = 60;
@@ -2747,7 +2775,7 @@ function certText(type, s){
     return `This is to certify that ${name}, ${child} of ${fatherName}, is a bonafide student of Class ${cls} (Section ${sec}) at ${SCHOOL_NAME}, bearing Roll No. ${s.grNo}. ${Pronoun} was admitted to this institution on ${admissionDate||'record on file'}.\n\nThis certificate is issued upon request for whatever purpose it may serve.`;
   }
   if(type==='leaving'){
-    return `This is to certify that ${name}, ${child} of ${fatherName}, Roll No. ${s.grNo}, was a student of Class ${cls} (Section ${sec}) at ${SCHOOL_NAME}. ${Pronoun} was admitted on ${admissionDate||'record on file'} and ${s.status==='Pasout'?'has successfully completed studies at this institution':'has left this institution'}.\n\nDuring ${pronoun}s stay, ${pronoun} conduct and character remained satisfactory.`.replace('${pronoun}s','their');
+    return `This is to certify that ${name}, ${child} of ${fatherName}, Roll No. ${s.grNo}, was a student of Class ${cls} (Section ${sec}) at ${SCHOOL_NAME}. ${Pronoun} was admitted on ${admissionDate||'record on file'} and ${s.status==='Passout'?'has successfully completed studies at this institution':'has left this institution'}.\n\nDuring ${pronoun}s stay, ${pronoun} conduct and character remained satisfactory.`.replace('${pronoun}s','their');
   }
   return `This is to certify that ${name}, ${child} of ${fatherName}, Roll No. ${s.grNo}, is presently studying in Class ${cls} (Section ${sec}) at ${SCHOOL_NAME} for the academic session 2025-26.`;
 }
@@ -2779,7 +2807,7 @@ function certificatesHTML(){
       <div class="field"><label>Status</label>
         <select id="certStatus">
           <option value="ALL" ${certFilters.status==='ALL'?'selected':''}>All Status</option>
-          ${['Promoted','NEW ENROLLMENT','Pasout','Dropout'].map(s=>`<option value="${s}" ${certFilters.status===s?'selected':''}>${s}</option>`).join('')}
+          ${['Promoted','NEW ENROLLMENT','Passout','Dropout'].map(s=>`<option value="${s}" ${certFilters.status===s?'selected':''}>${s}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -2846,7 +2874,7 @@ function attachCertificateHandlers(){
 
 function defaultAdmissionType(status){
   if(status==='Dropout') return 'droppedOut';
-  if(status==='Promoted' || status==='Pasout') return 'alreadyAdmitted';
+  if(status==='Promoted' || status==='Passout') return 'alreadyAdmitted';
   return 'outOfSchool'; // NEW ENROLLMENT default
 }
 
@@ -3353,7 +3381,7 @@ function drawLeavingCertificatePage(doc, grNo){
   formField('Last School Attended:', U(L.lastSchool));
   formField('Date of Admission:', s.admissionDate);
   formField('Class in Which Admitted:', romanClassLabel(s.admitClass));
-  formField('Class in Which Studying:', `${s.status==='Pasout'?'PASSED':'STUDYING IN'} ${romanClassLabel(s.currentClass)} CLASS`);
+  formField('Class in Which Passed:', `${romanClassLabel(s.currentClass)} CLASS`);
   formFieldDual('Progress:', U(L.progress), 'Conduct:', U(L.conduct), pageW/2-20);
   formField('Date of Leaving the School:', L.dateOfLeaving);
   formField('Reason of Leaving the School:', U(L.reason));
