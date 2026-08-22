@@ -935,6 +935,7 @@ function render(){
   if(view==='certificates') attachCertificateHandlers();
   if(view==='dashboard') attachDashboardHandlers();
   if(view==='letters') attachLettersHandlers();
+  if(view==='staff') attachStaffHandlers();
 }
 
 function navIcon(name){
@@ -945,6 +946,7 @@ function navIcon(name){
     reportcards:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M9 12h6M9 16h6M9 8h2"/></svg>',
     certificates:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="5"/><path d="M8.5 12.5 7 21l5-2.5L17 21l-1.5-8.5"/></svg>',
     letters:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="m4 5 8 7 8-7"/></svg>',
+    staff:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 2.7-5 6-5s6 2 6 5"/><circle cx="17" cy="8" r="2.5"/><path d="M15.5 13.2c2.4.4 4.5 2 4.5 4.8"/></svg>',
   };
   return icons[name]||'';
 }
@@ -957,6 +959,7 @@ function sidebarHTML(){
     {k:'reportcards', label:'Report Cards'},
     {k:'certificates', label:'Certificates'},
     {k:'letters', label:'Letters & Documents'},
+    {k:'staff', label:'Staff'},
   ];
   const showSettings = FIREBASE_ENABLED && currentUser && isAdmin();
   return `
@@ -989,6 +992,7 @@ function sidebarHTML(){
         <div class="nav-item compact" id="addUserNavBtn">${navIcon('students')}<span>Add User</span></div>
         <div class="nav-item compact" id="schoolInfoBtn">${navIcon('dashboard')}<span>School Info & Logo</span></div>
         <div class="nav-item compact" id="classSettingsBtn">${navIcon('reportcards')}<span>Class Settings</span></div>
+        <div class="nav-item compact" id="fullBackupBtn">${navIcon('certificates')}<span>Download Full Backup</span></div>
       ` : ''}
     ` : ''}
 
@@ -1016,6 +1020,7 @@ function pageHTML(){
   if(view==='reportcards') return reportCardsHTML();
   if(view==='certificates') return certificatesHTML();
   if(view==='letters') return lettersHTML();
+  if(view==='staff') return staffHTML();
   return '';
 }
 
@@ -1029,6 +1034,8 @@ function attachGlobalHandlers(){
   if(addUserBtn) addUserBtn.addEventListener('click', openAddUserModal);
   const classSettingsBtn = document.getElementById('classSettingsBtn');
   if(classSettingsBtn) classSettingsBtn.addEventListener('click', openClassSettingsModal);
+  const fullBackupBtn = document.getElementById('fullBackupBtn');
+  if(fullBackupBtn) fullBackupBtn.addEventListener('click', downloadFullBackup);
   const schoolInfoBtn = document.getElementById('schoolInfoBtn');
   if(schoolInfoBtn) schoolInfoBtn.addEventListener('click', openSchoolInfoModal);
   const switchSchoolBtn = document.getElementById('switchSchoolBtn');
@@ -1659,6 +1666,86 @@ function showUndoToast(msg, onUndo){
 function csvEscape(v){
   const s = String(v==null?'':v);
   return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+}
+
+/* ============ FULL SCHOOL BACKUP ============ */
+async function fetchAllAttendanceRows(){
+  const rows = [];
+  if(FIREBASE_ENABLED && currentSchoolId){
+    try{
+      const snap = await schoolCol('data')
+        .where(firebase.firestore.FieldPath.documentId(), '>=', 'attendance_')
+        .where(firebase.firestore.FieldPath.documentId(), '<', 'attendance_\uf8ff')
+        .get();
+      snap.forEach(doc=>{
+        const monthKey = doc.id.replace('attendance_','');
+        const monthData = JSON.parse(doc.data().value||'{}');
+        Object.entries(monthData).forEach(([date, statuses])=>{
+          Object.entries(statuses).forEach(([grNo, status])=>{
+            rows.push({ Date: date, RollNo: grNo, Status: status });
+          });
+        });
+      });
+    }catch(e){ /* best effort */ }
+  } else {
+    Object.entries(attendanceStore).forEach(([monthKey, monthData])=>{
+      Object.entries(monthData).forEach(([date, statuses])=>{
+        Object.entries(statuses).forEach(([grNo, status])=>{
+          rows.push({ Date: date, RollNo: grNo, Status: status });
+        });
+      });
+    });
+  }
+  return rows;
+}
+
+async function downloadFullBackup(){
+  showToast('Preparing full backup — this may take a moment…');
+  if(!staffLoaded) await loadStaff();
+  if(!lettersLoaded) await loadLetters();
+
+  const wb = XLSX.utils.book_new();
+
+  const studentRows = STUDENTS.map(s=>({
+    RollNo:s.grNo, Name:s.name, FatherName:s.fatherName, Gender:s.gender, DOB:s.dob,
+    AdmitClass:s.admitClass, CurrentClass:s.currentClass, Section:s.section, Religion:s.religion,
+    Address:s.address, Contact:s.contact, EmergencyContact:s.emergencyContact, AdmissionDate:s.admissionDate,
+    Shift:s.shift, Medium:s.medium, Status:s.status, District:s.district, Taluka:s.taluka, Village:s.village,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(studentRows), 'Students');
+
+  const markRows = [];
+  Object.entries(marksStore).forEach(([key, rec])=>{
+    const parts = key.split('__');
+    const grNo = parts[0], exam = parts.slice(1).join('__');
+    (rec.subjects||[]).forEach(sub=>{
+      markRows.push({ RollNo:grNo, Exam:exam, Subject:sub.name, Total:sub.total, Obtained:sub.obtained });
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(markRows), 'Marks');
+
+  const attendanceRows = await fetchAllAttendanceRows();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(attendanceRows), 'Attendance');
+
+  const staffRows = staffList.map(s=>({
+    Name:s.name, Designation:s.designation, Subject:s.subject, Qualification:s.qualification,
+    CNIC:s.cnic, Contact:s.contact, JoiningDate:s.joiningDate, Status:s.status,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(staffRows), 'Staff');
+
+  const letterRows = lettersList.map(l=>({
+    Ref:l.ref, Date:l.date, To:l.to, Subject:l.subject, Signatory:l.signatoryName, Title:l.signatoryTitle,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(letterRows), 'Letters');
+
+  const leavingRows = Object.entries(leavingStore).map(([grNo, L])=>({
+    RollNo:grNo, Caste:L.caste, PlaceOfBirth:L.placeOfBirth, LastSchool:L.lastSchool,
+    Progress:L.progress, Conduct:L.conduct, DateOfLeaving:L.dateOfLeaving, Reason:L.reason, Remarks:L.remarks,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(leavingRows), 'Leaving Records');
+
+  XLSX.writeFile(wb, `${SCHOOL_NAME.replace(/\s+/g,'_')}_Full_Backup_${todayISO()}.xlsx`);
+  showToast('Full backup downloaded');
 }
 
 function exportStudentsCSV(){
@@ -2518,18 +2605,212 @@ function drawLetterheadPDF(letter, save){
   return doc;
 }
 
+/* ============ STAFF / TEACHER MANAGEMENT ============ */
+let staffList = [];
+let staffLoaded = false;
+let staffFilters = { status:'Active', q:'' };
+
+async function loadStaff(){
+  if(FIREBASE_ENABLED && currentSchoolId){
+    try{
+      const snap = await schoolCol('staff').get();
+      staffList = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    }catch(e){ staffList = []; }
+  } else {
+    try{
+      const res = await appStorage.get('staff');
+      staffList = res ? JSON.parse(res.value) : [];
+    }catch(e){ staffList = []; }
+  }
+  staffList.sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+  staffLoaded = true;
+}
+
+async function saveStaffLocal(){
+  await appStorage.set('staff', JSON.stringify(staffList));
+}
+
+async function addStaffMember(data){
+  if(FIREBASE_ENABLED && currentSchoolId){
+    const ref = schoolCol('staff').doc();
+    await ref.set(data);
+    staffList.push({ id: ref.id, ...data });
+  } else {
+    const rec = { id:'local-'+Date.now(), ...data };
+    staffList.push(rec);
+    await saveStaffLocal();
+  }
+}
+
+async function updateStaffMember(id, patch){
+  const idx = staffList.findIndex(s=>s.id===id);
+  if(idx<0) return;
+  staffList[idx] = { ...staffList[idx], ...patch };
+  if(FIREBASE_ENABLED && currentSchoolId){
+    try{ await schoolCol('staff').doc(id).update(patch); }catch(e){ showToast('Save failed'); }
+  } else {
+    await saveStaffLocal();
+  }
+}
+
+async function deleteStaffMember(id){
+  staffList = staffList.filter(s=>s.id!==id);
+  if(FIREBASE_ENABLED && currentSchoolId){
+    try{ await schoolCol('staff').doc(id).delete(); }catch(e){ showToast('Delete failed'); }
+  } else {
+    await saveStaffLocal();
+  }
+}
+
+function staffHTML(){
+  if(!staffLoaded){
+    loadStaff().then(()=>{ if(view==='staff') render(); });
+    return `<div class="empty-state">Loading staff records…</div>`;
+  }
+  const list = staffList.filter(s=>{
+    if(staffFilters.status!=='ALL' && (s.status||'Active')!==staffFilters.status) return false;
+    if(staffFilters.q){
+      const q = staffFilters.q.toLowerCase();
+      if(!( (s.name||'').toLowerCase().includes(q) || (s.designation||'').toLowerCase().includes(q) )) return false;
+    }
+    return true;
+  });
+  return `
+  <div class="page-head">
+    <div><div class="eyebrow">Staff Directory</div><h1>Staff & Teachers</h1>
+      <div class="sub">${list.length} of ${staffList.length} records shown</div></div>
+    ${(!FIREBASE_ENABLED || isAdmin())?`<button class="btn gold" id="addStaffBtn">+ Add Staff Member</button>`:''}
+  </div>
+
+  <div class="filters">
+    <select id="staffStatusFilter">
+      <option value="Active" ${staffFilters.status==='Active'?'selected':''}>Active</option>
+      <option value="Inactive" ${staffFilters.status==='Inactive'?'selected':''}>Inactive</option>
+      <option value="ALL" ${staffFilters.status==='ALL'?'selected':''}>All</option>
+    </select>
+    <input type="search" id="staffSearch" placeholder="Search name or designation..." value="${staffFilters.q}" style="min-width:220px;">
+  </div>
+
+  <div class="panel" style="padding:0;overflow-x:auto;">
+    <table>
+      <thead><tr><th>Name</th><th>Designation</th><th>Subject</th><th>CNIC</th><th>Contact</th><th>Joining Date</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        ${list.length ? list.map(s=>`
+          <tr>
+            <td>${s.name||''}</td>
+            <td>${s.designation||''}</td>
+            <td>${s.subject||''}</td>
+            <td>${s.cnic||''}</td>
+            <td>${s.contact?`<a href="tel:${s.contact}" style="color:var(--navy);">${s.contact}</a>`:''}</td>
+            <td>${s.joiningDate||''}</td>
+            <td><span class="tag ${s.status==='Inactive'?'dropout':'promoted'}">${s.status||'Active'}</span></td>
+            <td>${(!FIREBASE_ENABLED || isAdmin())?`<button class="btn outline sm" data-editstaff="${s.id}">Edit</button>`:''}</td>
+          </tr>
+        `).join('') : `<tr><td colspan="8"><div class="empty-state">No staff records yet.</div></td></tr>`}
+      </tbody>
+    </table>
+  </div>
+  <div id="staffModalRoot"></div>
+  `;
+}
+
+function attachStaffHandlers(){
+  const addBtn = document.getElementById('addStaffBtn');
+  if(addBtn) addBtn.addEventListener('click', ()=> openStaffFormModal(null));
+  document.getElementById('staffStatusFilter').addEventListener('change', e=>{ staffFilters.status=e.target.value; render(); });
+  document.getElementById('staffSearch').addEventListener('input', e=>{ staffFilters.q=e.target.value; render(); });
+  document.querySelectorAll('[data-editstaff]').forEach(b=> b.addEventListener('click', ()=> openStaffFormModal(b.dataset.editstaff)));
+}
+
+function openStaffFormModal(id){
+  const isEdit = !!id;
+  const existing = isEdit ? staffList.find(s=>s.id===id) : {
+    name:'', designation:'Teacher', subject:'', cnic:'', contact:'', qualification:'', joiningDate:'', status:'Active',
+  };
+  const el = document.getElementById('staffModalRoot');
+  el.innerHTML = `
+  <div class="modal-backdrop" id="stBackdrop">
+    <div class="modal">
+      <div class="modal-head">
+        <div><div class="eyebrow">${isEdit?'Edit Staff Member':'Add Staff Member'}</div><h3>${isEdit?existing.name:'New Staff Member'}</h3></div>
+        <button class="modal-close" id="stClose">&times;</button>
+      </div>
+      <div class="field-grid">
+        <div class="field"><label>Full Name</label><input type="text" data-sf="name" value="${existing.name||''}"></div>
+        <div class="field"><label>Designation</label>
+          <select data-sf="designation">
+            ${['Principal','Vice Principal','Teacher','Assistant Teacher','Clerk','Peon','Chowkidar','Other'].map(o=>`<option value="${o}" ${existing.designation===o?'selected':''}>${o}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Subject (if teacher)</label><input type="text" data-sf="subject" value="${existing.subject||''}"></div>
+        <div class="field"><label>Qualification</label><input type="text" data-sf="qualification" value="${existing.qualification||''}"></div>
+        <div class="field"><label>CNIC</label><input type="text" data-sf="cnic" value="${existing.cnic||''}"></div>
+        <div class="field"><label>Contact</label><input type="text" data-sf="contact" value="${existing.contact||''}"></div>
+        <div class="field"><label>Joining Date (DD-MM-YYYY)</label><input type="text" data-sf="joiningDate" value="${existing.joiningDate||''}"></div>
+        <div class="field"><label>Status</label>
+          <select data-sf="status">
+            <option value="Active" ${existing.status==='Active'?'selected':''}>Active</option>
+            <option value="Inactive" ${existing.status==='Inactive'?'selected':''}>Inactive</option>
+          </select>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div style="display:flex;gap:10px;justify-content:space-between;">
+        ${isEdit && (!FIREBASE_ENABLED || isAdmin()) ? `<button class="btn sm" style="background:var(--red);border-color:var(--red);" id="stDelete">Delete</button>` : `<span></span>`}
+        <div style="display:flex;gap:10px;">
+          <button class="btn outline" id="stCancel">Cancel</button>
+          <button class="btn gold" id="stSave">${isEdit?'Save Changes':'Add Staff Member'}</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  const close = ()=> el.innerHTML='';
+  document.getElementById('stClose').addEventListener('click', close);
+  document.getElementById('stCancel').addEventListener('click', close);
+  document.getElementById('stBackdrop').addEventListener('click', e=>{ if(e.target.id==='stBackdrop') close(); });
+  const delBtn = document.getElementById('stDelete');
+  if(delBtn) delBtn.addEventListener('click', async ()=>{
+    await deleteStaffMember(id);
+    close(); render();
+    showToast('Staff member deleted');
+  });
+  document.getElementById('stSave').addEventListener('click', async ()=>{
+    const data = {};
+    document.querySelectorAll('[data-sf]').forEach(inp=>{ data[inp.dataset.sf] = inp.value; });
+    if(!data.name.trim()){ showToast('Name is required'); return; }
+    if(isEdit) await updateStaffMember(id, data);
+    else await addStaffMember(data);
+    close(); render();
+    showToast(isEdit ? 'Staff record updated' : 'Staff member added');
+  });
+}
+
+let rcMode = 'single';
 function reportCardsHTML(){
-  const list = STUDENTS.filter(s=> s.status!=='Dropout' && (rcFilters.cls==='ALL'||s.currentClass===rcFilters.cls) && (rcFilters.section==='ALL'||s.section===rcFilters.section));
-  const sections = classSections(rcFilters.cls);
   return `
   <div class="page-head">
     <div><div class="eyebrow">Academics</div><h1>Report Cards</h1>
       <div class="sub">Select students, enter marks, generate PDF report cards in one go.</div></div>
   </div>
+  <div class="pill-select" style="margin-bottom:18px;">
+    <label class="${rcMode==='single'?'checked':''}" data-rcmode="single"><input type="radio" name="rcMode" ${rcMode==='single'?'checked':''}>Single Exam Report Cards</label>
+    <label class="${rcMode==='consolidated'?'checked':''}" data-rcmode="consolidated"><input type="radio" name="rcMode" ${rcMode==='consolidated'?'checked':''}>Consolidated Result & Promotion List</label>
+  </div>
+  ${rcMode==='single' ? singleExamHTML() : consolidatedResultHTML()}
+  `;
+}
 
+function singleExamHTML(){
+  const list = STUDENTS.filter(s=> s.status!=='Dropout' && (rcFilters.cls==='ALL'||s.currentClass===rcFilters.cls) && (rcFilters.section==='ALL'||s.section===rcFilters.section));
+  const sections = classSections(rcFilters.cls);
+  const usedExamNames = [...new Set(Object.keys(marksStore).map(k=>k.split('__').slice(1).join('__')))].filter(Boolean);
+  return `
   <div class="panel">
     <div class="field-grid" style="grid-template-columns:2fr 1fr 1fr;">
-      <div class="field"><label>Examination Name</label><input type="text" id="examName" value="${rcExamName}"></div>
+      <div class="field"><label>Examination Name</label>
+        <input type="text" id="examName" value="${rcExamName}" list="examNameList">
+        <datalist id="examNameList">${usedExamNames.map(n=>`<option value="${n}">`).join('')}</datalist>
+      </div>
       <div class="field"><label>Class</label>
         <select id="rcCls">${CLASS_ORDER.map(c=>`<option value="${c}" ${rcFilters.cls===c?'selected':''}>Class ${c}</option>`).join('')}</select>
       </div>
@@ -2571,7 +2852,149 @@ function reportCardsHTML(){
   `;
 }
 
+/* ---- Consolidated Result & Promotion List ---- */
+let consFilters = { cls:'VI', exams: [] };
+
+function consolidatedResultHTML(){
+  const usedExamNames = [...new Set(Object.keys(marksStore).map(k=>k.split('__').slice(1).join('__')))].filter(Boolean);
+  return `
+  <div class="panel">
+    <div class="field"><label>Class</label>
+      <select id="consCls">${CLASS_ORDER.map(c=>`<option value="${c}" ${consFilters.cls===c?'selected':''}>Class ${c}</option>`).join('')}</select>
+    </div>
+    <div class="field" style="margin-top:12px;">
+      <label>Exams to Combine (select 1 or more — e.g. Term 1 + Term 2 + Final for an annual result)</label>
+      <div class="pill-select">
+        ${usedExamNames.length ? usedExamNames.map(n=>`
+          <label class="${consFilters.exams.includes(n)?'checked':''}"><input type="checkbox" data-consexam="${n}" ${consFilters.exams.includes(n)?'checked':''}>${n}</label>
+        `).join('') : `<div class="helper">No exams with marks entered yet — enter marks under "Single Exam Report Cards" first.</div>`}
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <button class="btn gold" id="genConsolidated" ${consFilters.exams.length?'':'disabled'}>Generate Consolidated Report Cards</button>
+      <button class="btn outline" id="genPromotionList" ${consFilters.exams.length?'':'disabled'}>Generate Promotion List</button>
+    </div>
+  </div>
+  <div class="panel" id="consPreviewPanel"></div>
+  `;
+}
+
+function computeConsolidated(cls, examNames){
+  const list = STUDENTS.filter(s=> s.status!=='Dropout' && s.status!=='Passout' && s.currentClass===cls);
+  return list.map(s=>{
+    const subjectTotals = {};
+    examNames.forEach(exam=>{
+      const rec = marksStore[`${s.grNo}__${exam}`];
+      if(!rec) return;
+      rec.subjects.forEach(sub=>{
+        if(!subjectTotals[sub.name]) subjectTotals[sub.name] = {total:0, obtained:0};
+        const t = Number(sub.total)||0;
+        const o = sub.obtained===''||sub.obtained==null ? 0 : Number(sub.obtained)||0;
+        subjectTotals[sub.name].total += t;
+        subjectTotals[sub.name].obtained += o;
+      });
+    });
+    const subjects = Object.entries(subjectTotals).map(([name,v])=>({ name, total:v.total, obtained:v.obtained }));
+    const sumTotal = subjects.reduce((a,b)=>a+b.total,0);
+    const sumObtained = subjects.reduce((a,b)=>a+b.obtained,0);
+    const pct = sumTotal ? (sumObtained/sumTotal*100) : 0;
+    return { student:s, subjects, sumTotal, sumObtained, pct, result: (sumTotal>0 && pct>=33) ? 'Promoted' : (sumTotal>0 ? 'Not Promoted' : 'No Marks') };
+  });
+}
+
+function attachConsolidatedHandlers(){
+  document.getElementById('consCls').addEventListener('change', e=>{ consFilters.cls=e.target.value; render(); });
+  document.querySelectorAll('[data-consexam]').forEach(cb=> cb.addEventListener('change', e=>{
+    const name = e.target.dataset.consexam;
+    if(e.target.checked) consFilters.exams.push(name); else consFilters.exams = consFilters.exams.filter(x=>x!==name);
+    render();
+  }));
+  const genRC = document.getElementById('genConsolidated');
+  if(genRC) genRC.addEventListener('click', ()=> generateConsolidatedReportCardsPDF(consFilters.cls, consFilters.exams));
+  const genPL = document.getElementById('genPromotionList');
+  if(genPL) genPL.addEventListener('click', ()=> generatePromotionListPDF(consFilters.cls, consFilters.exams));
+}
+
+function generateConsolidatedReportCardsPDF(cls, examNames){
+  const rows = computeConsolidated(cls, examNames);
+  if(!rows.length){ showToast('No students found for this class'); return; }
+  const {jsPDF} = window.jspdf;
+  const doc = new jsPDF({unit:'pt', format:'a4'});
+  rows.forEach((r, idx)=>{
+    if(idx>0) doc.addPage();
+    drawConsolidatedReportCardPage(doc, r, examNames);
+  });
+  doc.save(`Consolidated_Result_Class_${cls}.pdf`);
+  showToast(`Generated ${rows.length} consolidated report card(s)`);
+}
+
+function drawConsolidatedReportCardPage(doc, r, examNames){
+  const s = r.student;
+  const pageW = doc.internal.pageSize.getWidth();
+  let y = 60;
+  doc.setDrawColor(184,134,59); doc.setLineWidth(2);
+  doc.rect(30,30,pageW-60, doc.internal.pageSize.getHeight()-60);
+  doc.setFont('times','bold'); doc.setFontSize(18); doc.setTextColor(22,48,58);
+  doc.text(SCHOOL_NAME, pageW/2, y, {align:'center'}); y+=22;
+  doc.setFont('times','bold'); doc.setFontSize(13); doc.setTextColor(184,134,59);
+  doc.text(`CONSOLIDATED RESULT — ${examNames.join(' + ')}`, pageW/2, y, {align:'center'}); y+=30;
+
+  const marginX = 55;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(30);
+  const info = [['Student Name', s.name], ['Father Name', s.fatherName], ['Roll No.', s.grNo], ['Class / Section', `${s.currentClass} - ${s.section}`]];
+  info.forEach(([lbl,val],i)=>{
+    doc.setFont('helvetica','bold'); doc.text(lbl+':', marginX, y+i*17);
+    doc.setFont('helvetica','normal'); doc.text(String(val), marginX+120, y+i*17);
+  });
+  y += info.length*17 + 22;
+
+  const totalW = pageW - marginX*2;
+  const head = [['Subject','Total Marks','Obtained','Percentage']];
+  const body = r.subjects.map(sub=>[sub.name, sub.total, sub.obtained, sub.total?((sub.obtained/sub.total*100).toFixed(1)+'%'):'-']);
+  body.push(['Overall', r.sumTotal, r.sumObtained, r.pct.toFixed(1)+'%']);
+  y = autoTableSimple(doc, y, head, body, pageW);
+  y += 26;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(13);
+  doc.setTextColor(r.result==='Promoted' ? 62 : 200, r.result==='Promoted' ? 130 : 60, 90);
+  doc.text(`Result: ${r.result}`, marginX, y);
+
+  y += 50;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(90);
+  doc.text('Class Teacher: ______________________', marginX, y);
+  doc.text('Principal: ______________________', pageW-marginX-160, y);
+}
+
+function generatePromotionListPDF(cls, examNames){
+  const rows = computeConsolidated(cls, examNames).sort((a,b)=> b.pct-a.pct);
+  if(!rows.length){ showToast('No students found for this class'); return; }
+  const {jsPDF} = window.jspdf;
+  const doc = new jsPDF({unit:'pt', format:'a4'});
+  const pageW = doc.internal.pageSize.getWidth();
+  let y = 55;
+  doc.setFont('times','bold'); doc.setFontSize(17); doc.setTextColor(20);
+  doc.text(SCHOOL_NAME, pageW/2, y, {align:'center'}); y+=22;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(90);
+  doc.text(`Promotion List — Class ${cls} — ${examNames.join(' + ')}`, pageW/2, y, {align:'center'}); y+=25;
+  doc.setDrawColor(184,134,59); doc.setLineWidth(1.2); doc.line(50,y,pageW-50,y); y+=25;
+
+  const promoted = rows.filter(r=>r.result==='Promoted').length;
+  const notPromoted = rows.filter(r=>r.result==='Not Promoted').length;
+  doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(30);
+  doc.text(`Total: ${rows.length}   Promoted: ${promoted}   Not Promoted: ${notPromoted}`, 50, y); y+=20;
+
+  const head = [['Roll #','Name','Total %','Result']];
+  const body = rows.map(r=>[r.student.grNo, r.student.name, r.pct.toFixed(1)+'%', r.result]);
+  autoTableSimple(doc, y, head, body, pageW);
+
+  doc.save(`Promotion_List_Class_${cls}.pdf`);
+  showToast('Promotion list downloaded');
+}
+
 function attachReportCardHandlers(){
+  document.querySelectorAll('[data-rcmode]').forEach(el=> el.addEventListener('click', ()=>{ rcMode=el.dataset.rcmode; render(); }));
+  if(rcMode==='consolidated'){ attachConsolidatedHandlers(); return; }
   document.getElementById('examName').addEventListener('change', e=>{ rcExamName=e.target.value||rcExamName; render(); });
   document.getElementById('rcCls').addEventListener('change', e=>{ rcFilters.cls=e.target.value; rcFilters.section='ALL'; render(); });
   document.getElementById('rcSection').addEventListener('change', e=>{ rcFilters.section=e.target.value; render(); });
