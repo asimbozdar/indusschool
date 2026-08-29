@@ -2425,6 +2425,20 @@ async function saveLetterRecord(letter){
   }
 }
 
+async function updateLetterRecord(id, letter){
+  if(FIREBASE_ENABLED && currentSchoolId){
+    try{
+      await schoolCol('letters').doc(id).set({ ...letter, updatedAt: Date.now(), updatedBy: currentUser?currentUser.email:'' }, {merge:true});
+    }catch(e){ showToast('Could not save changes — check your connection.'); return; }
+  } else {
+    lettersList = lettersList.map(l=> l.id===id ? { ...l, ...letter } : l);
+    await appStorage.set('letters', JSON.stringify(lettersList));
+    return;
+  }
+  const idx = lettersList.findIndex(l=>l.id===id);
+  if(idx>=0) lettersList[idx] = { ...lettersList[idx], ...letter };
+}
+
 async function deleteLetterRecord(id){
   if(FIREBASE_ENABLED && currentSchoolId){
     try{ await schoolCol('letters').doc(id).delete(); }catch(e){ showToast('Delete failed'); return; }
@@ -2463,8 +2477,9 @@ function lettersHTML(){
             <td>${l.date||''}</td>
             <td>${l.subject||''}</td>
             <td>${l.to||''}</td>
-            <td style="display:flex;gap:6px;">
+            <td style="display:flex;gap:6px;flex-wrap:wrap;">
               <button class="btn outline sm" data-reprint="${l.id}">View / Print</button>
+              ${(!FIREBASE_ENABLED || isAdmin())?`<button class="btn outline sm" data-editletter="${l.id}">Edit</button>`:''}
               ${(!FIREBASE_ENABLED || isAdmin())?`<button class="btn sm" style="background:var(--red);border-color:var(--red);" data-delletter="${l.id}">Delete</button>`:''}
             </td>
           </tr>`).join('') : `<tr><td colspan="5"><div class="empty-state">No letters yet — click "+ New Letter" to create one.</div></td></tr>`}
@@ -2482,6 +2497,10 @@ function attachLettersHandlers(){
     const letter = lettersList.find(l=>l.id===b.dataset.reprint);
     if(letter) drawLetterheadPDF(letter, true);
   }));
+  document.querySelectorAll('[data-editletter]').forEach(b=> b.addEventListener('click', ()=>{
+    const letter = lettersList.find(l=>l.id===b.dataset.editletter);
+    if(letter) openLetterComposeModal(letter);
+  }));
   document.querySelectorAll('[data-delletter]').forEach(b=> b.addEventListener('click', async ()=>{
     await deleteLetterRecord(b.dataset.delletter);
     render();
@@ -2489,33 +2508,35 @@ function attachLettersHandlers(){
   }));
 }
 
-function openLetterComposeModal(){
+function openLetterComposeModal(existingLetter){
+  const isEdit = !!existingLetter;
   const el = document.getElementById('letterModalRoot');
   const today = todayISO().split('-').reverse().join('-'); // DD-MM-YYYY
+  const l = existingLetter || {};
   el.innerHTML = `
   <div class="modal-backdrop" id="ltBackdrop">
     <div class="modal" style="max-width:640px;">
       <div class="modal-head">
-        <div><div class="eyebrow">New Letter</div><h3>Compose on Letterhead</h3></div>
+        <div><div class="eyebrow">${isEdit?'Edit Letter':'New Letter'}</div><h3>${isEdit?'Edit Letterhead Document':'Compose on Letterhead'}</h3></div>
         <button class="modal-close" id="ltClose">&times;</button>
       </div>
       <div class="field-grid">
-        <div class="field"><label>Reference No.</label><input type="text" id="ltRef" value="${nextLetterRef()}"></div>
-        <div class="field"><label>Date</label><input type="text" id="ltDate" value="${today}"></div>
+        <div class="field"><label>Reference No.</label><input type="text" id="ltRef" value="${isEdit ? (l.ref||'') : nextLetterRef()}"></div>
+        <div class="field"><label>Date</label><input type="text" id="ltDate" value="${isEdit ? (l.date||today) : today}"></div>
       </div>
-      <div class="field"><label>To</label><input type="text" id="ltTo" placeholder="e.g. The District Head, Tando Allahyar"></div>
-      <div class="field"><label>Subject</label><input type="text" id="ltSubject" placeholder="e.g. AUTHORIZATION FOR RECEIVING BOOKS"></div>
+      <div class="field"><label>To</label><input type="text" id="ltTo" value="${l.to||''}" placeholder="e.g. The District Head, Tando Allahyar"></div>
+      <div class="field"><label>Subject</label><input type="text" id="ltSubject" value="${l.subject||''}" placeholder="e.g. AUTHORIZATION FOR RECEIVING BOOKS"></div>
       <div class="field"><label>Letter Body</label>
-        <textarea id="ltBody" rows="8" style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit;" placeholder="Write the letter content here — each blank line starts a new paragraph."></textarea>
+        <textarea id="ltBody" rows="8" style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit;" placeholder="Write the letter content here — each blank line starts a new paragraph.">${l.body||''}</textarea>
       </div>
       <div class="field-grid">
-        <div class="field"><label>Signatory Name</label><input type="text" id="ltSigName" value=""></div>
-        <div class="field"><label>Signatory Title</label><input type="text" id="ltSigTitle" value="Principal"></div>
+        <div class="field"><label>Signatory Name</label><input type="text" id="ltSigName" value="${l.signatoryName||''}"></div>
+        <div class="field"><label>Signatory Title</label><input type="text" id="ltSigTitle" value="${l.signatoryTitle||'Principal'}"></div>
       </div>
       <div class="divider"></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;">
         <button class="btn outline" id="ltCancel">Cancel</button>
-        <button class="btn gold" id="ltGenerate">Generate & Save PDF</button>
+        <button class="btn gold" id="ltGenerate">${isEdit?'Save Changes & Regenerate PDF':'Generate & Save PDF'}</button>
       </div>
     </div>
   </div>`;
@@ -2534,6 +2555,14 @@ function openLetterComposeModal(){
       signatoryTitle: document.getElementById('ltSigTitle').value.trim()||'Principal',
     };
     if(!letter.subject || !letter.body.trim()){ showToast('Subject and letter body are required'); return; }
+    if(isEdit){
+      await updateLetterRecord(existingLetter.id, letter);
+      drawLetterheadPDF({ ...letter, id: existingLetter.id }, true);
+      close();
+      render();
+      showToast('Letter updated and regenerated');
+      return;
+    }
     await saveLetterRecord(letter);
     drawLetterheadPDF(letter, true);
     close();
