@@ -1478,17 +1478,17 @@ function suggestNextGrNo(){
 
 /* ============ EXCEL IMPORT / TEMPLATE ============ */
 const EXCEL_TEMPLATE_HEADERS = [
-  'Roll No','Student Name','Father Name','Gender','Date of Birth (DD-MM-YYYY)',
-  'Admit Class','Current Class','Section','Religion','Address','Contact',
+  'Roll No','Student Name','Father Name','Mother Name','Gender','Date of Birth (DD-MM-YYYY)',
+  'Admit Class','Current Class','Section','Religion','Caste','Address','Contact',
   'Emergency Contact','Admission Date (DD-MM-YYYY)','Shift','Medium','Status',
-  'District','Taluka','Village',
+  'District','Taluka','Village','Last School Attended',
 ];
 
 function downloadExcelTemplate(){
   const wb = XLSX.utils.book_new();
-  const sampleRow = ['1','SAMPLE STUDENT','FATHER NAME','Male','01-04-2015',
-    CLASS_ORDER[0]||'I', CLASS_ORDER[0]||'I', 'A', 'Islam', 'Village / Address', '03001234567',
-    '03001234568', '01-04-2024', 'Morning', 'Urdu', 'NEW ENROLLMENT', SCHOOL_META.district||'', SCHOOL_META.taluka||'', SCHOOL_META.village||''];
+  const sampleRow = ['1','SAMPLE STUDENT','FATHER NAME','MOTHER NAME','Male','01-04-2015',
+    CLASS_ORDER[0]||'I', CLASS_ORDER[0]||'I', 'A', 'Islam', 'Caste', 'Village / Address', '03001234567',
+    '03001234568', '01-04-2024', 'Morning', 'Urdu', 'NEW ENROLLMENT', SCHOOL_META.district||'', SCHOOL_META.taluka||'', SCHOOL_META.village||'', 'Previous School Name'];
   const ws = XLSX.utils.aoa_to_sheet([EXCEL_TEMPLATE_HEADERS, sampleRow]);
   XLSX.utils.book_append_sheet(wb, ws, 'Students');
   XLSX.writeFile(wb, `${SCHOOL_NAME.replace(/\s+/g,'_')}_Student_Template.xlsx`);
@@ -1559,12 +1559,14 @@ function processImportRows(rows){
       grNo,
       name: name.toUpperCase(),
       fatherName: String(get('Father Name')||'').trim().toUpperCase(),
+      motherName: String(get('Mother Name')||'').trim().toUpperCase(),
       gender: /f/i.test(String(get('Gender')||'')) ? 'Female' : 'Male',
       dob: excelSerialToDMY(get('Date of Birth')),
       admitClass: String(get('Admit Class')||CLASS_ORDER[0]||'').trim(),
       currentClass: String(get('Current Class')||CLASS_ORDER[0]||'').trim(),
       section: String(get('Section')||'A').trim().toUpperCase(),
       religion: titleCase(get('Religion')||'Islam'),
+      caste: String(get('Caste')||'').trim().toUpperCase(),
       address: String(get('Address')||'').trim().toUpperCase(),
       contact: String(get('Contact')||'').trim(),
       emergencyContact: String(get('Emergency Contact')||'').trim(),
@@ -1575,6 +1577,7 @@ function processImportRows(rows){
       district: String(get('District')||SCHOOL_META.district||'').trim(),
       taluka: String(get('Taluka')||SCHOOL_META.taluka||'').trim(),
       village: String(get('Village')||SCHOOL_META.village||'').trim(),
+      lastSchool: String(get('Last School Attended')||'').trim().toUpperCase(),
       schoolName: SCHOOL_NAME,
     });
   });
@@ -1886,16 +1889,16 @@ function renderProfileModal(el, s, confirmingDelete){
 function openStudentFormModal(grNoOrNull){
   const isEdit = !!grNoOrNull;
   const s = isEdit ? STUDENTS.find(x=>x.grNo===grNoOrNull) : {
-    grNo: suggestNextGrNo(), name:'', fatherName:'', gender:'Male', dob:'',
-    admitClass:'VI', currentClass:'VI', section:'A', religion:'Islam', address:'',
+    grNo: suggestNextGrNo(), name:'', fatherName:'', motherName:'', gender:'Male', dob:'',
+    admitClass:'VI', currentClass:'VI', section:'A', religion:'Islam', caste:'', address:'',
     contact:'', emergencyContact:'', admissionDate:'', shift:'Morning', medium:'Sindhi',
-    status:'NEW ENROLLMENT', district: SCHOOL_META.district, taluka: SCHOOL_META.taluka, village: SCHOOL_META.village, schoolName: SCHOOL_NAME,
+    status:'NEW ENROLLMENT', district: SCHOOL_META.district, taluka: SCHOOL_META.taluka, village: SCHOOL_META.village, lastSchool:'', schoolName: SCHOOL_NAME,
   };
   const el = document.getElementById('addStudentModalRoot');
   const textFields = [
-    ['name','Full Name'], ['fatherName',"Father / Guardian Name"], ['dob','Date of Birth (DD-MM-YYYY)'],
-    ['address','Residential Address'], ['contact','Guardian Contact'], ['emergencyContact','Emergency Contact'],
-    ['admissionDate','Date of Admission (DD-MM-YYYY)'],
+    ['name','Full Name'], ['fatherName',"Father / Guardian Name"], ['motherName',"Mother's Name"], ['dob','Date of Birth (DD-MM-YYYY)'],
+    ['caste','Caste'], ['address','Residential Address'], ['contact','Guardian Contact'], ['emergencyContact','Emergency Contact'],
+    ['admissionDate','Date of Admission (DD-MM-YYYY)'], ['lastSchool','Last School Attended (if transferred)'],
   ];
   const selectFields = {
     gender: ['Male','Female'],
@@ -2631,11 +2634,16 @@ function drawLetterheadPDF(letter, save){
   doc.setFont('helvetica','normal'); doc.setFontSize(11.5); doc.setTextColor(20);
   if(letter.to){ doc.text(`To ${letter.to}`, marginX+16, y); y += 24; }
 
-  // Subject
+  // Subject — wraps onto additional lines if too long to fit within the page width
   if(letter.subject){
-    doc.setFont('helvetica','bold');
-    doc.text(`SUBJECT: ${letter.subject}`, marginX-6, y);
-    y += 26;
+    doc.setFont('helvetica','bold'); doc.setFontSize(11.5);
+    const subjectMaxW = pageW - (marginX-6) - (marginX-6);
+    const subjectLines = doc.splitTextToSize(`SUBJECT: ${letter.subject}`, subjectMaxW);
+    subjectLines.forEach(line=>{
+      doc.text(line, marginX-6, y);
+      y += 18;
+    });
+    y += 8;
   }
 
   // Body — split on blank lines into paragraphs, word-wrap each
@@ -3407,7 +3415,7 @@ function openSlipSettingsModal(){
 
 function openSlipModal(grNo){
   const s = STUDENTS.find(x=>x.grNo===grNo);
-  const existing = slipStore[grNo] || { motherName:'', group:'', teacherName:'', teacherContact:'' };
+  const existing = slipStore[grNo] || { motherName: s.motherName||'', group:'', teacherName:'', teacherContact:'' };
   const el = document.getElementById('slipModalRoot');
   el.innerHTML = `
   <div class="modal-backdrop" id="slBackdrop">
@@ -3448,13 +3456,13 @@ function openLeavingModal(grNo){
   const s = STUDENTS.find(x=>x.grNo===grNo);
   const defaultPlace = s.address || s.village || '';
   const autoDobWords = dobToWords(s.dob);
-  const existing = leavingStore[grNo] || { caste:'', placeOfBirth:defaultPlace, dobWords:'', lastSchool:'', classSinceWhen:'', progress:'Good', conduct:'Good', dateOfLeaving:'', reason:'', remarks:'S.L.C Issued' };
+  const existing = leavingStore[grNo] || { caste:s.caste||'', placeOfBirth:defaultPlace, dobWords:'', lastSchool:s.lastSchool||'', classSinceWhen:'', progress:'Good', conduct:'Good', dateOfLeaving:'', reason:'', remarks:'S.L.C Issued' };
   const el = document.getElementById('leavingModalRoot');
   const fields = [
-    ['caste','Caste'],
+    ['caste','Caste (from record — edit if needed)'],
     ['placeOfBirth','Place of Birth (from record — edit if needed)'],
     ['dobWords',`Date of Birth in Words — auto: "${autoDobWords||'—'}" (leave blank to use this automatically)`],
-    ['lastSchool','Last School Attended'],
+    ['lastSchool','Last School Attended (from record — edit if needed)'],
     ['classSinceWhen','Class in Which Studying & Since When'],
     ['progress','Progress'], ['conduct','Conduct'],
     ['dateOfLeaving','Date of Leaving the School'], ['reason','Reason of Leaving'], ['remarks','Remarks'],
@@ -3687,7 +3695,7 @@ function drawSingleBispSlip(doc, x, y, w, h, grNo){
   let cw = fullW/3;
   field('Student Name:', s?U(s.name):'', fullLeft, cy, fullLeft+cw-10);
   field('Father Name:', s?U(s.fatherName):'', fullLeft+cw+6, cy, fullLeft+cw*2-10);
-  field('Mother Name:', L.motherName?U(L.motherName):'', fullLeft+cw*2+6, cy, fullRight);
+  field('Mother Name:', (L.motherName||s.motherName) ? U(L.motherName||s.motherName) : '', fullLeft+cw*2+6, cy, fullRight);
 
   // Row 2 (full width): School Name (wide) / EMIS Code
   cy += rowH;
@@ -3880,11 +3888,11 @@ function drawLeavingCertificatePage(doc, grNo){
 
   formField('Name of Student:', U(s.name));
   formField("Father's Name:", U(s.fatherName));
-  formFieldDual('Religion:', U(s.religion), 'Caste:', U(L.caste), pageW/2-20);
+  formFieldDual('Religion:', U(s.religion), 'Caste:', (L.caste||s.caste)?U(L.caste||s.caste):'', pageW/2-20);
   formField('Place of Birth:', U(placeOfBirth));
   // Date of Birth gets an earlier split so the auto-generated words have maximum room
   formFieldDual('Date of Birth:', s.dob, '(In Words):', dobWords, marginX+230);
-  formField('Last School Attended:', U(L.lastSchool));
+  formField('Last School Attended:', (L.lastSchool||s.lastSchool)?U(L.lastSchool||s.lastSchool):'');
   formField('Date of Admission:', s.admissionDate);
   formFieldTall('Class in Which Studying & Since When:', U(L.classSinceWhen));
   formField('Class in Which Admitted:', romanClassLabel(s.admitClass));
